@@ -478,6 +478,28 @@
     padding: 8px 0;
   }
 
+  /* AFK warning toast */
+  .afk-toast {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #a33d00;
+    border: 1px solid #f07030;
+    color: #fff;
+    padding: 10px 20px;
+    border-radius: var(--radius);
+    font-size: 0.9rem;
+    font-weight: 600;
+    z-index: 500;
+    animation: toastIn 0.3s ease;
+    white-space: nowrap;
+  }
+  @keyframes toastIn {
+    from { opacity: 0; transform: translateX(-50%) translateY(-10px); }
+    to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+  }
+
   /* Sort animation */
   @keyframes cardSlideIn {
     from { transform: translateY(18px) scale(0.92); opacity: 0; }
@@ -685,6 +707,10 @@ socket.on('state', (state) => {
       selectedIndices.clear();
     }
   }
+  // Stop countdown if turn moved away from me
+  if (gameState && gameState.turnPlayerId === myId && state.turnPlayerId !== myId) {
+    stopMyTurnCountdown();
+  }
   gameState = state;
   if (state.phase === 'lobby' || state.phase === 'waiting') {
     renderWaiting(state);
@@ -697,6 +723,20 @@ socket.on('state', (state) => {
     showGameover(state.winner);
   }
 });
+
+socket.on('afkWarning', ({ name, secondsLeft }) => {
+  showAfkToast(`⏱ ${name} will be kicked in ${secondsLeft}s for being AFK`);
+});
+
+function showAfkToast(msg) {
+  const existing = document.querySelector('.afk-toast');
+  if (existing) existing.remove();
+  const toast = document.createElement('div');
+  toast.className = 'afk-toast';
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 5000);
+}
 
 socket.on('kicked', () => {
   alert("You were kicked from the room by the host.");
@@ -750,7 +790,7 @@ function renderGame(state) {
       <div class="opponent-count">${p.cardCount} card${p.cardCount !== 1 ? 's' : ''}</div>
       ${!p.connected ? '<div class="offline-badge">offline</div>' : ''}
       <div class="mini-cards">${cardsHTML}</div>
-      ${isHost && state.phase === 'lobby' ? `<button onclick="kickPlayer('${p.id}')" style="margin-top:4px;background:rgba(224,85,85,0.15);border:1px solid rgba(224,85,85,0.3);color:#f08080;border-radius:6px;padding:2px 8px;font-size:0.7rem;cursor:pointer;width:100%">Kick</button>` : ''}
+      ${isHost && p.id !== myId ? `<button onclick="kickPlayer('${p.id}')" style="margin-top:4px;background:rgba(224,85,85,0.15);border:1px solid rgba(224,85,85,0.3);color:#f08080;border-radius:6px;padding:2px 8px;font-size:0.7rem;cursor:pointer;width:100%">Kick</button>` : ''}
     </div>`;
   }).join('');
 
@@ -770,14 +810,16 @@ function renderGame(state) {
     pv.innerHTML = stackHTML;
   }
 
-  // Turn indicator
+  // Turn indicator + AFK countdown
   const ti = document.getElementById('turn-indicator');
   if (isMyTurn) {
     ti.textContent = state.currentRank ? `Play cards or call bluff — rank: ${state.currentRank}` : 'Your turn — choose a rank and play cards';
     ti.style.color = 'rgba(255,255,255,0.9)';
+    startMyTurnCountdown();
   } else {
     ti.textContent = turnPlayer ? `Waiting for ${turnPlayer.name}...` : '';
     ti.style.color = 'rgba(255,255,255,0.4)';
+    stopMyTurnCountdown();
   }
 
   // Log
@@ -937,6 +979,34 @@ function showReveal(data) {
 function showGameover(winnerName) {
   document.getElementById('winner-name').textContent = winnerName;
   document.getElementById('gameover-overlay').classList.add('active');
+}
+
+// ── AFK countdown on your own turn ──────────────────────────────────────────
+let afkCountdownInterval = null;
+let afkCountdownStart = null;
+
+function startMyTurnCountdown() {
+  if (afkCountdownInterval) return; // already running
+  afkCountdownStart = Date.now();
+  afkCountdownInterval = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - afkCountdownStart) / 1000);
+    const left = 30 - elapsed;
+    const ti = document.getElementById('turn-indicator');
+    if (!ti) return;
+    if (left <= 10 && left > 0) {
+      ti.style.color = left <= 5 ? '#e05555' : '#f0a030';
+      ti.textContent = `Your turn — ${left}s before AFK kick`;
+    }
+    if (left <= 0) stopMyTurnCountdown();
+  }, 1000);
+}
+
+function stopMyTurnCountdown() {
+  if (afkCountdownInterval) {
+    clearInterval(afkCountdownInterval);
+    afkCountdownInterval = null;
+    afkCountdownStart = null;
+  }
 }
 
 // Auto-fill room code from URL param (nice-to-have)

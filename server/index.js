@@ -92,6 +92,78 @@ function advanceTurn(room) {
   room.turnIdx = (room.turnIdx + 1) % room.players.length;
 }
 
+// ── Kick helper ──────────────────────────────────────────────────────────────
+function kickPlayer(room, targetId, reason) {
+  const idx = room.players.findIndex(p => p.id === targetId);
+  if (idx === -1) return;
+  const kicked = room.players[idx];
+
+  // If kicked mid-game, give their cards back to the pile then discard
+  if (room.phase === 'playing' || room.phase === 'reveal') {
+    room.pile.push(...kicked.hand);
+    // Fix turnIdx if needed
+    if (room.turnIdx >= room.players.length - 1) room.turnIdx = 0;
+    // Clear last played if it was this player
+    if (room.lastPlayerId === targetId) {
+      room.lastPlayed = [];
+      room.lastPlayerId = null;
+      room.currentRank = null;
+    }
+  }
+
+  room.players.splice(idx, 1);
+  clearAfkTimer(room, targetId);
+  addLog(room, `${kicked.name} was ${reason}`);
+  io.to(targetId).emit('kicked');
+
+  // If only 1 player left mid-game, end it
+  if (room.phase === 'playing' && room.players.length === 1) {
+    room.winner = room.players[0].name;
+    room.phase = 'gameover';
+    addLog(room, `🏆 ${room.winner} wins — last player standing!`);
+  }
+
+  broadcastState(room);
+}
+
+// ── AFK timer ────────────────────────────────────────────────────────────────
+const afkTimers = {}; // roomId:playerId → { warning, kick }
+
+function clearAfkTimer(room, playerId) {
+  const key = `${room.roomId}:${playerId}`;
+  if (afkTimers[key]) {
+    clearTimeout(afkTimers[key].warning);
+    clearTimeout(afkTimers[key].kick);
+    delete afkTimers[key];
+  }
+}
+
+function startAfkTimer(room) {
+  const player = room.players[room.turnIdx];
+  if (!player) return;
+  clearAfkTimer(room, player.id);
+  const key = `${room.roomId}:${player.id}`;
+
+  // Warn at 25s
+  afkTimers[key] = {
+    warning: setTimeout(() => {
+      if (!rooms[room.roomId]) return;
+      io.to(room.roomId).emit('afkWarning', { name: player.name, secondsLeft: 5 });
+    }, 25000),
+
+    // Kick at 30s
+    kick: setTimeout(() => {
+      if (!rooms[room.roomId]) return;
+      const current = rooms[room.roomId];
+      // Make sure it's still their turn
+      if (current.players[current.turnIdx]?.id === player.id) {
+        kickPlayer(current, player.id, 'kicked for being AFK');
+        if (current.phase === 'playing') startAfkTimer(current);
+      }
+    }, 30000),
+  };
+}
+
 // ── Socket events ────────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
 
@@ -130,18 +202,13 @@ io.on('connection', (socket) => {
     broadcastState(room);
   });
 
-  // Kick a player (host only, lobby only)
+  // Kick a player (host only, any phase except gameover)
   socket.on('kick', ({ targetId }) => {
     const roomId = socket.data.roomId;
     const room = rooms[roomId];
     if (!room || room.hostId !== socket.id) return;
-    if (room.phase !== 'lobby') return;
-    const idx = room.players.findIndex(p => p.id === targetId);
-    if (idx === -1) return;
-    const kicked = room.players.splice(idx, 1)[0];
-    addLog(room, `${kicked.name} was kicked by the host`);
-    io.to(targetId).emit('kicked');
-    broadcastState(room);
+    if (room.phase === 'gameover') return;
+    kickPlayer(room, targetId, 'kicked by the host');
   });
 
   // Start game (any player can trigger if ≥2 players)
@@ -159,6 +226,7 @@ io.on('connection', (socket) => {
     room.turnIdx = 0;
     addLog(room, 'Game started! ' + room.players[room.turnIdx].name + ' goes first.');
     broadcastState(room);
+    startAfkTimer(room);
   });
 
   // Play cards
@@ -190,6 +258,7 @@ io.on('connection', (socket) => {
 
     advanceTurn(room);
     broadcastState(room);
+    startAfkTimer(room);
   });
 
   // Call bluff — only current turn player can do this
@@ -238,6 +307,7 @@ io.on('connection', (socket) => {
       if (checkWin(room)) { broadcastState(room); return; }
       room.phase = 'playing';
       broadcastState(room);
+      startAfkTimer(room);
     }, 3500);
   });
 
@@ -263,6 +333,7 @@ io.on('connection', (socket) => {
         room.currentRank = null;
         room.passCount = 0;
         broadcastState(room);
+        startAfkTimer(room);
         return;
       }
     }
@@ -273,6 +344,7 @@ io.on('connection', (socket) => {
 
     advanceTurn(room);
     broadcastState(room);
+    startAfkTimer(room);
   });
 
   socket.on('disconnect', () => {
@@ -284,6 +356,7 @@ io.on('connection', (socket) => {
 
     player.connected = false;
     addLog(room, `${player.name} disconnected`);
+    clearAfkTimer(room, socket.id);
 
     const connectedPlayers = room.players.filter(p => p.connected);
 
