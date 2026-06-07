@@ -112,7 +112,7 @@ function kickPlayer(room, targetId, reason) {
   }
 
   room.players.splice(idx, 1);
-  clearAfkTimer(room, targetId);
+  clearOfflineTimerFull(room.roomId, targetId);
   addLog(room, `${kicked.name} was ${reason}`);
   io.to(targetId).emit('kicked');
 
@@ -126,42 +126,47 @@ function kickPlayer(room, targetId, reason) {
   broadcastState(room);
 }
 
-// ── AFK timer ────────────────────────────────────────────────────────────────
-const afkTimers = {}; // roomId:playerId → { warning, kick }
+// ── Offline kick timer ───────────────────────────────────────────────────────
+const offlineTimers = {}; // roomId:playerId → timeoutId
 
-function clearAfkTimer(room, playerId) {
-  const key = `${room.roomId}:${playerId}`;
-  if (afkTimers[key]) {
-    clearTimeout(afkTimers[key].warning);
-    clearTimeout(afkTimers[key].kick);
-    delete afkTimers[key];
+function clearOfflineTimer(roomId, playerId) {
+  const key = `${roomId}:${playerId}`;
+  if (offlineTimers[key]) {
+    clearTimeout(offlineTimers[key]);
+    delete offlineTimers[key];
   }
 }
 
-function startAfkTimer(room) {
-  const player = room.players[room.turnIdx];
+function startOfflineTimer(room, playerId) {
+  clearOfflineTimer(room.roomId, playerId);
+  const key = `${room.roomId}:${playerId}`;
+  const player = room.players.find(p => p.id === playerId);
   if (!player) return;
-  clearAfkTimer(room, player.id);
-  const key = `${room.roomId}:${player.id}`;
 
-  // Warn at 25s
-  afkTimers[key] = {
-    warning: setTimeout(() => {
-      if (!rooms[room.roomId]) return;
-      io.to(room.roomId).emit('afkWarning', { name: player.name, secondsLeft: 5 });
-    }, 25000),
+  // Warn everyone at 20s
+  const warnTimer = setTimeout(() => {
+    if (!rooms[room.roomId]) return;
+    io.to(room.roomId).emit('offlineWarning', { name: player.name, secondsLeft: 10 });
+  }, 20000);
 
-    // Kick at 30s
-    kick: setTimeout(() => {
-      if (!rooms[room.roomId]) return;
-      const current = rooms[room.roomId];
-      // Make sure it's still their turn
-      if (current.players[current.turnIdx]?.id === player.id) {
-        kickPlayer(current, player.id, 'kicked for being AFK');
-        if (current.phase === 'playing') startAfkTimer(current);
-      }
-    }, 30000),
-  };
+  // Kick at 30s
+  offlineTimers[key] = setTimeout(() => {
+    if (!rooms[room.roomId]) return;
+    const current = rooms[room.roomId];
+    const p = current.players.find(pl => pl.id === playerId);
+    if (p && !p.connected) {
+      kickPlayer(current, playerId, 'removed for being offline too long');
+    }
+  }, 30000);
+
+  // Store warn timer too so we can clear it
+  offlineTimers[`${key}:warn`] = warnTimer;
+}
+
+function clearOfflineTimerFull(roomId, playerId) {
+  const key = `${roomId}:${playerId}`;
+  if (offlineTimers[key]) { clearTimeout(offlineTimers[key]); delete offlineTimers[key]; }
+  if (offlineTimers[`${key}:warn`]) { clearTimeout(offlineTimers[`${key}:warn`]); delete offlineTimers[`${key}:warn`]; }
 }
 
 // ── Socket events ────────────────────────────────────────────────────────────
@@ -178,8 +183,10 @@ io.on('connection', (socket) => {
     if (existing) {
       existing.id = socket.id;
       existing.connected = true;
+      clearOfflineTimerFull(roomId, existing.id);
       socket.join(roomId);
       socket.emit('joined', { roomId, playerId: socket.id });
+      addLog(room, `${existing.name} reconnected`);
       broadcastState(room);
       return;
     }
@@ -226,7 +233,7 @@ io.on('connection', (socket) => {
     room.turnIdx = 0;
     addLog(room, 'Game started! ' + room.players[room.turnIdx].name + ' goes first.');
     broadcastState(room);
-    startAfkTimer(room);
+
   });
 
   // Play cards
@@ -258,7 +265,7 @@ io.on('connection', (socket) => {
 
     advanceTurn(room);
     broadcastState(room);
-    startAfkTimer(room);
+
   });
 
   // Call bluff — only current turn player can do this
@@ -307,7 +314,7 @@ io.on('connection', (socket) => {
       if (checkWin(room)) { broadcastState(room); return; }
       room.phase = 'playing';
       broadcastState(room);
-      startAfkTimer(room);
+  
     }, 3500);
   });
 
@@ -333,7 +340,7 @@ io.on('connection', (socket) => {
         room.currentRank = null;
         room.passCount = 0;
         broadcastState(room);
-        startAfkTimer(room);
+    
         return;
       }
     }
@@ -344,7 +351,7 @@ io.on('connection', (socket) => {
 
     advanceTurn(room);
     broadcastState(room);
-    startAfkTimer(room);
+
   });
 
   socket.on('disconnect', () => {
@@ -356,17 +363,16 @@ io.on('connection', (socket) => {
 
     player.connected = false;
     addLog(room, `${player.name} disconnected`);
-    clearAfkTimer(room, socket.id);
 
     const connectedPlayers = room.players.filter(p => p.connected);
 
-    // Case 1: host is alone in waiting room and goes offline → close room immediately
+    // Case 1: host alone in lobby goes offline → close room immediately
     if (room.phase === 'lobby' && connectedPlayers.length === 0) {
       delete rooms[roomId];
       return;
     }
 
-    // Case 2: everyone is offline → close room after 60s grace period
+    // Case 2: everyone offline → close room after 60s
     if (connectedPlayers.length === 0) {
       addLog(room, 'All players offline. Room will close in 60 seconds.');
       broadcastState(room);
@@ -378,11 +384,17 @@ io.on('connection', (socket) => {
       return;
     }
 
-    // Transfer host to next connected player if host left
+    // Transfer host if needed
     if (room.hostId === socket.id) {
       const next = connectedPlayers[0];
       room.hostId = next.id;
       addLog(room, `${next.name} is now the host`);
+    }
+
+    // Start 30s offline kick timer during a game
+    if (room.phase === 'playing' || room.phase === 'reveal') {
+      io.to(roomId).emit('offlineWarning', { name: player.name, secondsLeft: 30 });
+      startOfflineTimer(room, socket.id);
     }
 
     broadcastState(room);

@@ -478,8 +478,8 @@
     padding: 8px 0;
   }
 
-  /* AFK warning toast */
-  .afk-toast {
+  /* Offline warning toast */
+  .offline-toast {
     position: fixed;
     top: 20px;
     left: 50%;
@@ -709,7 +709,7 @@ socket.on('state', (state) => {
   }
   // Stop countdown if turn moved away from me
   if (gameState && gameState.turnPlayerId === myId && state.turnPlayerId !== myId) {
-    stopMyTurnCountdown();
+    // nothing needed now
   }
   gameState = state;
   if (state.phase === 'lobby' || state.phase === 'waiting') {
@@ -724,15 +724,17 @@ socket.on('state', (state) => {
   }
 });
 
-socket.on('afkWarning', ({ name, secondsLeft }) => {
-  showAfkToast(`⏱ ${name} will be kicked in ${secondsLeft}s for being AFK`);
+socket.on('offlineWarning', ({ name, secondsLeft }) => {
+  showToast(`📡 ${name} is offline — will be removed in ${secondsLeft}s`, '#a33d00', '#f07030');
 });
 
-function showAfkToast(msg) {
-  const existing = document.querySelector('.afk-toast');
+function showToast(msg, bg = '#a33d00', border = '#f07030') {
+  const existing = document.querySelector('.offline-toast');
   if (existing) existing.remove();
   const toast = document.createElement('div');
-  toast.className = 'afk-toast';
+  toast.className = 'offline-toast';
+  toast.style.background = bg;
+  toast.style.borderColor = border;
   toast.textContent = msg;
   document.body.appendChild(toast);
   setTimeout(() => toast.remove(), 5000);
@@ -810,16 +812,14 @@ function renderGame(state) {
     pv.innerHTML = stackHTML;
   }
 
-  // Turn indicator + AFK countdown
+  // Turn indicator
   const ti = document.getElementById('turn-indicator');
   if (isMyTurn) {
     ti.textContent = state.currentRank ? `Play cards or call bluff — rank: ${state.currentRank}` : 'Your turn — choose a rank and play cards';
     ti.style.color = 'rgba(255,255,255,0.9)';
-    startMyTurnCountdown();
   } else {
     ti.textContent = turnPlayer ? `Waiting for ${turnPlayer.name}...` : '';
     ti.style.color = 'rgba(255,255,255,0.4)';
-    stopMyTurnCountdown();
   }
 
   // Log
@@ -981,35 +981,22 @@ function showGameover(winnerName) {
   document.getElementById('gameover-overlay').classList.add('active');
 }
 
-// ── AFK countdown on your own turn ──────────────────────────────────────────
-let afkCountdownInterval = null;
-let afkCountdownStart = null;
+// ── Offline kick warning toast ───────────────────────────────────────────────
+socket.on('offlineWarning', ({ name, secondsLeft }) => {
+  showToast(`📡 ${name} is offline — will be removed in ${secondsLeft}s`);
+});
 
-function startMyTurnCountdown() {
-  if (afkCountdownInterval) return; // already running
-  afkCountdownStart = Date.now();
-  afkCountdownInterval = setInterval(() => {
-    const elapsed = Math.floor((Date.now() - afkCountdownStart) / 1000);
-    const left = 30 - elapsed;
-    const ti = document.getElementById('turn-indicator');
-    if (!ti) return;
-    if (left <= 10 && left > 0) {
-      ti.style.color = left <= 5 ? '#e05555' : '#f0a030';
-      ti.textContent = `Your turn — ${left}s before AFK kick`;
-    }
-    if (left <= 0) stopMyTurnCountdown();
-  }, 1000);
+function showToast(msg) {
+  const existing = document.querySelector('.offline-toast');
+  if (existing) existing.remove();
+  const toast = document.createElement('div');
+  toast.className = 'offline-toast';
+  toast.textContent = msg;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 5000);
 }
 
-function stopMyTurnCountdown() {
-  if (afkCountdownInterval) {
-    clearInterval(afkCountdownInterval);
-    afkCountdownInterval = null;
-    afkCountdownStart = null;
-  }
-}
-
-// Auto-fill room code from URL param (nice-to-have)
+// Auto-fill room code from URL param
 const urlParams = new URLSearchParams(window.location.search);
 const codeParam = urlParams.get('room');
 if (codeParam) document.getElementById('room-code').value = codeParam.toUpperCase();
