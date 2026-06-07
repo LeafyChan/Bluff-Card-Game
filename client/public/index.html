@@ -698,15 +698,25 @@ socket.on('state', (state) => {
   }
 });
 
+socket.on('kicked', () => {
+  alert("You were kicked from the room by the host.");
+  location.reload();
+});
+
 socket.on('reveal', (data) => {
   showReveal(data);
 });
 
 // ── Waiting room render ──────────────────────────────────────────────────────
 function renderWaiting(state) {
+  const isHost = state.hostId === myId;
   const list = document.getElementById('waiting-player-list');
   list.innerHTML = state.players.map(p =>
-    `<li><span class="dot ${p.connected ? '' : 'offline'}"></span>${p.name}${p.id === myId ? ' (you)' : ''}</li>`
+    `<li>
+      <span class="dot ${p.connected ? '' : 'offline'}"></span>
+      <span style="flex:1">${p.name}${p.id === myId ? ' <span style="color:var(--text2);font-size:0.75rem">(you)</span>' : ''}${p.id === state.hostId ? ' <span style="color:var(--amber);font-size:0.75rem">👑 host</span>' : ''}</span>
+      ${isHost && p.id !== myId ? `<button onclick="kickPlayer('${p.id}')" style="background:rgba(224,85,85,0.15);border:1px solid rgba(224,85,85,0.3);color:#f08080;border-radius:6px;padding:2px 10px;font-size:0.75rem;cursor:pointer">Kick</button>` : ''}
+    </li>`
   ).join('');
   const btn = document.getElementById('start-btn');
   btn.disabled = state.players.length < 2;
@@ -730,15 +740,17 @@ function renderGame(state) {
   // Opponents
   const oppRow = document.getElementById('opponents-row');
   const others = state.players.filter(p => p.id !== myId);
+  const isHost = state.hostId === myId;
   oppRow.innerHTML = others.map(p => {
     const isActive = p.id === state.turnPlayerId;
     const miniCards = Math.min(p.cardCount, 8);
     const cardsHTML = Array.from({ length: miniCards }, () => '<div class="mini-card-back"></div>').join('');
     return `<div class="opponent-card ${isActive ? 'active-turn' : ''}">
-      <div class="opponent-name">${p.name}</div>
+      <div class="opponent-name">${p.id === state.hostId ? '👑 ' : ''}${p.name}</div>
       <div class="opponent-count">${p.cardCount} card${p.cardCount !== 1 ? 's' : ''}</div>
       ${!p.connected ? '<div class="offline-badge">offline</div>' : ''}
       <div class="mini-cards">${cardsHTML}</div>
+      ${isHost && state.phase === 'lobby' ? `<button onclick="kickPlayer('${p.id}')" style="margin-top:4px;background:rgba(224,85,85,0.15);border:1px solid rgba(224,85,85,0.3);color:#f08080;border-radius:6px;padding:2px 8px;font-size:0.7rem;cursor:pointer;width:100%">Kick</button>` : ''}
     </div>`;
   }).join('');
 
@@ -830,7 +842,7 @@ function sortHand() {
   if (!gameState) return;
   const me = gameState.players.find(p => p.id === myId);
   if (!me || !me.hand) return;
-  const RANK_ORDER = ['A','K','Q','J','10','9','8','7','6','5','4','3','2'];
+  const RANK_ORDER = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
   const SUIT_ORDER = { S: 0, H: 1, D: 2, C: 3 };
   // Build array of original indices sorted by rank then suit
   const indices = me.hand.map((_, i) => i);
@@ -868,6 +880,10 @@ function playCards() {
   socket.emit('play', { cardIndices: originalIndices, claimedRank: rank });
   selectedIndices.clear();
   sortedHand = null; // reset sort after playing
+}
+
+function kickPlayer(playerId) {
+  socket.emit('kick', { targetId: playerId });
 }
 
 function callBluff() {

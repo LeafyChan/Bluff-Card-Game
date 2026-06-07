@@ -29,6 +29,7 @@ function createRoom(roomId) {
   return {
     roomId,
     phase: 'lobby',     // lobby | playing | reveal | gameover
+    hostId: null,       // socket id of room creator
     players: [],        // [{ id, name, hand, connected }]
     pile: [],           // all cards in center pile { r, s, playerId }
     lastPlayed: [],     // cards from most recent play
@@ -45,6 +46,7 @@ function publicState(room, forPlayerId) {
   return {
     roomId: room.roomId,
     phase: room.phase,
+    hostId: room.hostId,
     players: room.players.map(p => ({
       id: p.id,
       name: p.name,
@@ -120,10 +122,25 @@ io.on('connection', (socket) => {
     }
 
     room.players.push({ id: socket.id, name, hand: [], connected: true });
+    if (!room.hostId) room.hostId = socket.id; // first player is host
     socket.join(roomId);
     socket.data.roomId = roomId;
     socket.emit('joined', { roomId, playerId: socket.id });
     addLog(room, `${name} joined`);
+    broadcastState(room);
+  });
+
+  // Kick a player (host only, lobby only)
+  socket.on('kick', ({ targetId }) => {
+    const roomId = socket.data.roomId;
+    const room = rooms[roomId];
+    if (!room || room.hostId !== socket.id) return;
+    if (room.phase !== 'lobby') return;
+    const idx = room.players.findIndex(p => p.id === targetId);
+    if (idx === -1) return;
+    const kicked = room.players.splice(idx, 1)[0];
+    addLog(room, `${kicked.name} was kicked by the host`);
+    io.to(targetId).emit('kicked');
     broadcastState(room);
   });
 
@@ -263,11 +280,39 @@ io.on('connection', (socket) => {
     if (!roomId || !rooms[roomId]) return;
     const room = rooms[roomId];
     const player = room.players.find(p => p.id === socket.id);
-    if (player) {
-      player.connected = false;
-      addLog(room, `${player.name} disconnected`);
-      broadcastState(room);
+    if (!player) return;
+
+    player.connected = false;
+    addLog(room, `${player.name} disconnected`);
+
+    const connectedPlayers = room.players.filter(p => p.connected);
+
+    // Case 1: host is alone in waiting room and goes offline → close room immediately
+    if (room.phase === 'lobby' && connectedPlayers.length === 0) {
+      delete rooms[roomId];
+      return;
     }
+
+    // Case 2: everyone is offline → close room after 60s grace period
+    if (connectedPlayers.length === 0) {
+      addLog(room, 'All players offline. Room will close in 60 seconds.');
+      broadcastState(room);
+      setTimeout(() => {
+        if (rooms[roomId] && rooms[roomId].players.every(p => !p.connected)) {
+          delete rooms[roomId];
+        }
+      }, 60000);
+      return;
+    }
+
+    // Transfer host to next connected player if host left
+    if (room.hostId === socket.id) {
+      const next = connectedPlayers[0];
+      room.hostId = next.id;
+      addLog(room, `${next.name} is now the host`);
+    }
+
+    broadcastState(room);
   });
 });
 
