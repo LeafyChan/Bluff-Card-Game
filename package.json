@@ -1,0 +1,20 @@
+{
+  "name": "cheat-card-game",
+  "version": "1.0.0",
+  "description": "Multiplayer Cheat / Bullshit card game",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "nodemon server/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
