@@ -836,7 +836,7 @@ function renderGame(state) {
     if (!state.currentRank) {
       html += `<select class="rank-select" id="rank-chooser">
         <option value="">Pick rank...</option>
-        ${['A','K','Q','J','10','9','8','7','6','5','4','3','2'].map(r => `<option>${r}</option>`).join('')}
+        ${['K','Q','J','10','9','8','7','6','5','4','3','2','A'].map(r => `<option>${r}</option>`).join('')}
       </select>`;
     }
     html += `<button class="btn btn-green" onclick="playCards()">▶ Play selected</button>`;
@@ -884,7 +884,7 @@ function sortHand() {
   if (!gameState) return;
   const me = gameState.players.find(p => p.id === myId);
   if (!me || !me.hand) return;
-  const RANK_ORDER = ['2','3','4','5','6','7','8','9','10','J','Q','K','A'];
+  const RANK_ORDER = ['K','Q','J','10','9','8','7','6','5','4','3','2','A'];
   const SUIT_ORDER = { S: 0, H: 1, D: 2, C: 3 };
   // Build array of original indices sorted by rank then suit
   const indices = me.hand.map((_, i) => i);
